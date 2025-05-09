@@ -5,7 +5,9 @@
 #####################################################
 
 from router import Router
-
+import heapq
+from packet import Packet
+import ast
 
 class LSrouter(Router):
     """Link state routing protocol implementation.
@@ -14,52 +16,147 @@ class LSrouter(Router):
     data structures). See the `Router` base class for docstrings of the methods to
     override.
     """
-
+    # Link state thì cần : Thông tin về hàng xóm,
     def __init__(self, addr, heartbeat_time):
         Router.__init__(self, addr)  # Initialize base class - DO NOT REMOVE
         self.heartbeat_time = heartbeat_time
         self.last_time = 0
-        # TODO
         #   add your own class fields and initialization code here
-        pass
+        # Tên hàng xóm : Cách đi đến đó thông quả cổng nào và cost bao nhiêu (Gần đó)
+        self.neighbors = {} # {neighbor_addr: (port, cost)}
+        # Các thông tin về các đường đi trong mạng AS và các cost
+        self.link_state_db = {}  # {router_addr: {neighbor: cost}}
+        # Lưu trữ các sequence_number của các node trong AS
+        self.sequence_numbers = {} # {router_addr: seq_num}
+        # để từ đó cập nhật giá trị của bảng định tuyến (Chủ yếu dựa vào link_state_db)
+        self.forwarding_tb = {} #{dst: port}
 
+    def update_forwarding_tb(self):
+            graph = {}
+            for router_add,nbrs in self.link_state_db.items():
+                graph[router_add] = nbrs.copy()
+            # thêm vào độ thị vị trí của chính mình
+            graph[self.addr] = {neighbor: cost for neighbor,(port_to_dest,cost) in self.neighbors.items()}
+
+            # tiến hành chạy dijkstra
+            dist = {self.addr: 0}
+            prev = {}
+            visited = set()
+            heap = [(0, self.addr)]
+
+            while heap:
+                cost_u, u = heapq.heappop(heap)
+                if u in visited:
+                    continue
+                visited.add(u)
+
+                for v, cost_uv in graph.get(u, {}).items():
+                    if v not in dist or dist[v] > cost_u + cost_uv:
+                        dist[v] = cost_u + cost_uv
+                        prev[v] = u
+                        heapq.heappush(heap, (dist[v], v))
+            # Truy vết lại tìm đường đi ngắn nhất đến các đỉnh để điền vào forwarding table
+            new_table = {}
+            for dst in dist:
+                if dst == self.addr:
+                    continue
+                # Truy vết từ dst về self.addr để tìm bước đầu tiên
+                next_hop = dst
+                while prev[next_hop] != self.addr:
+                    next_hop = prev[next_hop]
+                port, _ = self.neighbors.get(next_hop, (None, None))
+                if port is not None:
+                    new_table[dst] = port
+            self.forwarding_tb = new_table
+    
+    # Hàm để cấu hình gói tin và gửi gói tin trong mạng
+    def changeInfo(self):
+        # khởi tạo sequence number nếu chưa từng gửi thông tin cho các router khác
+        if self.addr not in self.sequence_numbers:
+            self.sequence_numbers[self.addr] = 0
+        # Tăng giá trị của sequence number lên để gửi gói về thông tin mới
+        self.sequence_numbers[self.addr] += 1
+        seq = self.sequence_numbers[self.addr]
+        # Tạo một gói tin với Rounting để gửi cho hàng xóm về các thông tin đường đi mới
+        content = {"src":self.addr,"seq":seq,"neighbors":{neighbor:cost for neighbor,(port,cost) in self.neighbors.items()}}
+        # Cập nhận đường đi mới thông qua liên kết mới trong hàng xóm
+        self.link_state_db[self.addr] = content["neighbors"]
+        # Cập nhật bảng forwarding table sau khi có link state mới
+        self.update_forwarding_tb()
+        # Gửi gói tin cho hàng xóm
+        packet = Packet(Packet.ROUTING, self.addr, None, str(content))
+        for neighbor, (port_n, cost_of_neighbors) in self.neighbors.items():
+            self.send(port_n, packet.copy())
+        return packet
+    
     def handle_packet(self, port, packet):
         """Process incoming packet."""
         # TODO
         if packet.is_traceroute:
-            # Hint: this is a normal data packet
+            # Hint: this is a normal data packet(Gói tin bình thường cần được gửi đi)
             # If the forwarding table contains packet.dst_addr
             #   send packet based on forwarding table, e.g., self.send(port, packet)
-            pass
+            destination = packet.dst_addr
+            if destination in self.forwarding_tb:
+                new_port = self.forwarding_tb[destination]
+                self.send(new_port,packet.copy())
         else:
+            # nội dung của gói tin sẽ được quy định như sau dict: {"src": addr, "seq": n, "neighbors": {neighbor: cost}}
+            info = ast.literal_eval(packet.content)
+            src = info["src"]
+            seq = info["seq"]
+            neighbors = info["neighbors"]
             # Hint: this is a routing packet generated by your routing protocol
             # If the sequence number is higher and the received link state is different
-            #   update the local copy of the link state
-            #   update the forwarding table
-            #   broadcast the packet to other neighbors
-            pass
+            if src not in self.sequence_numbers or seq > self.sequence_numbers[src]:
+                #   update the local copy of the link state
+                self.sequence_numbers[src] = seq
+                self.link_state_db[src] = neighbors
+                #   update the forwarding table
+                self.update_forwarding_tb()
+                #   broadcast the packet to other neighbors
+                for neighbor, (port_n, cost_of_neighbors) in self.neighbors.items():
+                    self.send(port_n, packet.copy())
+            return True
+        return False
+        
 
     def handle_new_link(self, port, endpoint, cost):
         """Handle new link."""
         # TODO
+        # Cập nhật hàng xóm mới của chính mình sau khi có link mới nối đến mình
+        info = (port,cost)
+        self.neighbors[endpoint] = info
         #   update local data structures and forwarding table
         #   broadcast the new link state of this router to all neighbors
-        pass
+        self.changeInfo()
+        return True
+
+        
 
     def handle_remove_link(self, port):
         """Handle removed link."""
         # TODO
+        # Tìm tất cả các hàng xóm có port nối với router đang xét và xoá
+        neighborsRemove = [n for n, (p, _) in self.neighbors.items() if p == port]
+        for n in neighborsRemove:
+            del self.neighbors[n]
         #   update local data structures and forwarding table
         #   broadcast the new link state of this router to all neighbors
-        pass
+        self.changeInfo()
+        return True
 
     def handle_time(self, time_ms):
         """Handle current time."""
         if time_ms - self.last_time >= self.heartbeat_time:
             self.last_time = time_ms
             # TODO
-            #   broadcast the link state of this router to all neighbors
-            pass
+            #   broadcast the link state of this router to all neighbors'
+            self.changeInfo()
+            return True
+        return False
+                
+
 
     def __repr__(self):
         """Representation for debugging in the network visualizer."""
