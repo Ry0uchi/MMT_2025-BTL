@@ -117,7 +117,7 @@ class DVrouter(Router):
 
             for dest in self.dv:
                 cost, next_hop = self.dv[dest]
-                # Poison reverse: nếu next hop đi qua chính neighbor này, thì gửi cost = ∞
+                # Poison reverse: if next hop is neighbor, cost = ∞
                 if next_hop == neighbor_addr:
                     dv_to_send[dest] = MAXIMUM
                 else:
