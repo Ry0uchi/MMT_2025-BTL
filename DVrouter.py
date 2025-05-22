@@ -111,22 +111,19 @@ class DVrouter(Router):
 
     def _broadcast_dv(self):
         """Handle broadcast of distance vector."""
-        # Prepare and send our current distance vector to all neighbors
-        dv_to_send = {}
-        for dest in self.dv:
-            cost, next_hop = self.dv[dest]
-            dv_to_send[dest] = cost
-            
-            # Poison reverse: if next hop is neighbor, cost = ∞
-            if next_hop == neighbor_addr:
-                dv_to_send[dest] = MAXIMUM
-            else:
-                dv_to_send[dest] = cost
-
-        content = json.dumps(dv_to_send)
-
         for port in self.neighbors:
             neighbor_addr, _ = self.neighbors[port]
+            dv_to_send = {}
+
+            for dest in self.dv:
+                cost, next_hop = self.dv[dest]
+                # Poison reverse: if next hop is neighbor, cost = ∞
+                if next_hop == neighbor_addr:
+                    dv_to_send[dest] = MAXIMUM
+                else:
+                    dv_to_send[dest] = cost
+
+            content = json.dumps(dv_to_send)
             pkt = Packet(Packet.ROUTING, self.addr, neighbor_addr, content)
             self.send(port, pkt)
 
